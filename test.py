@@ -5,6 +5,7 @@ from sqlalchemy import create_engine
 from sklearn.preprocessing import LabelEncoder
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 import numpy as np
+from sklearn.ensemble import IsolationForest
 
 app = Flask(__name__)
 CORS(app)
@@ -113,21 +114,33 @@ def detect_abnormal_requests():
         WHERE IsDeleted = 0
     """, engine)
 
-    # Merge quantity into requests
+    products_df = pd.read_sql("""
+        SELECT ProductID, Name
+        FROM Products
+        WHERE IsDeleted = 0
+    """, engine)
+
+    # --- Abnormal TotalPrice Detection (AI)
+    price_data = requests_df[['TotalPrice']]
+    price_model = IsolationForest(contamination=0.1, random_state=42)
+    requests_df['PriceAnomaly'] = price_model.fit_predict(price_data)
+
+    abnormal_price = requests_df[requests_df['PriceAnomaly'] == -1]
+
+    # --- Abnormal Quantity Detection (AI)
     merged = requests_df.merge(product_requests_df, on='RequestID')
+    merged = merged.merge(products_df, on='ProductID')
 
-    # Detect abnormal TotalPrice
-    requests_df['PriceZ'] = zscore(requests_df['TotalPrice'])
-    abnormal_price = requests_df[requests_df['PriceZ'].abs() > 2]
+    quantity_data = merged[['Quantity']]
+    quantity_model = IsolationForest(contamination=0.1, random_state=42)
+    merged['QuantityAnomaly'] = quantity_model.fit_predict(quantity_data)
 
-    # Detect abnormal Quantity
-    merged['QuantityZ'] = zscore(merged['Quantity'])
-    abnormal_quantity = merged[merged['QuantityZ'].abs() > 2]
+    abnormal_quantity = merged[merged['QuantityAnomaly'] == -1]
 
-    # Combine results
+    # Return results
     abnormal_combined = {
         "abnormal_total_price": abnormal_price[['RequestID', 'TotalPrice', 'Department']].to_dict(orient='records'),
-        "abnormal_quantity": abnormal_quantity[['RequestID', 'ProductID', 'Quantity', 'Department']].to_dict(orient='records')
+        "abnormal_quantity": abnormal_quantity[['RequestID', 'Name', 'Quantity', 'Department']].rename(columns={'Name': 'Product'}).to_dict(orient='records')
     }
 
     return jsonify(abnormal_combined)
