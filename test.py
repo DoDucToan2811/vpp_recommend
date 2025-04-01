@@ -56,6 +56,54 @@ def train_models(data):
     reg.fit(X_reg, y_reg)
 
     return clf, reg, le_dep, le_prod
+# ✅ Global storage for models & detection results
+detection_models = {
+    "price_model": None,
+    "quantity_model": None,
+    "price_abnormal_ids": set(),
+    "quantity_abnormal_ids": set()
+}
+
+def train_abnormality_models():
+    engine = get_engine()
+
+    requests_df = pd.read_sql("""
+        SELECT r.RequestID, r.TotalPrice, r.UserID, u.Department
+        FROM Requests r
+        JOIN Users u ON r.UserID = u.UserID
+        WHERE r.IsDeleted = 0 AND r.IsApprovedByDepLead = 1 AND r.IsProcessedByDepLead = 1
+    """, engine)
+
+    product_requests_df = pd.read_sql("""
+        SELECT RequestID, ProductID, Quantity
+        FROM Product_Requests
+        WHERE IsDeleted = 0
+    """, engine)
+
+    products_df = pd.read_sql("""
+        SELECT ProductID, Name
+        FROM Products
+        WHERE IsDeleted = 0
+    """, engine)
+
+    # ---- Train price anomaly model
+    price_model = IsolationForest(contamination=0.1, random_state=42)
+    requests_df['PriceAnomaly'] = price_model.fit_predict(requests_df[['TotalPrice']])
+    abnormal_price_ids = set(requests_df[requests_df['PriceAnomaly'] == -1]['RequestID'])
+
+    # ---- Train quantity anomaly model
+    merged = requests_df.merge(product_requests_df, on='RequestID')
+    merged = merged.merge(products_df, on='ProductID')
+
+    quantity_model = IsolationForest(contamination=0.1, random_state=42)
+    merged['QuantityAnomaly'] = quantity_model.fit_predict(merged[['Quantity']])
+    abnormal_quantity_ids = set(merged[merged['QuantityAnomaly'] == -1]['RequestID'])
+
+    # ✅ Save to global variable
+    detection_models['price_model'] = price_model
+    detection_models['quantity_model'] = quantity_model
+    detection_models['price_abnormal_ids'] = abnormal_price_ids
+    detection_models['quantity_abnormal_ids'] = abnormal_quantity_ids
 
 @app.route('/recommend_ml', methods=['GET'])
 def recommend_ml():
@@ -144,5 +192,34 @@ def detect_abnormal_requests():
     }
 
     return jsonify(abnormal_combined)
+@app.route('/check_request_abnormality', methods=['GET'])
+def check_request_abnormality():
+    request_id = request.args.get('request_id')
+    if not request_id:
+        return jsonify({"error": "Missing 'request_id' parameter"}), 400
+
+    try:
+        request_id = int(request_id)
+    except:
+        return jsonify({"error": "Invalid request_id"}), 400
+
+    result = {
+        "RequestID": request_id,
+        "IsAbnormal": False,
+        "AbnormalTypes": []
+    }
+
+    if request_id in detection_models['price_abnormal_ids']:
+        result["IsAbnormal"] = True
+        result["AbnormalTypes"].append("TotalPrice")
+
+    if request_id in detection_models['quantity_abnormal_ids']:
+        result["IsAbnormal"] = True
+        result["AbnormalTypes"].append("Quantity")
+
+    return jsonify(result)
+
+
 if __name__ == '__main__':
+    train_abnormality_models()
     app.run(debug=True)
