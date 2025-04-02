@@ -104,6 +104,10 @@ def train_abnormality_models():
     detection_models['quantity_model'] = quantity_model
     detection_models['price_abnormal_ids'] = abnormal_price_ids
     detection_models['quantity_abnormal_ids'] = abnormal_quantity_ids
+@app.route('/retrain_anomaly_models', methods=['POST'])
+def retrain_anomaly_models():
+    train_abnormality_models()
+    return '', 200
 
 @app.route('/recommend_ml', methods=['GET'])
 def recommend_ml():
