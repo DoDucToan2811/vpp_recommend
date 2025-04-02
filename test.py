@@ -25,15 +25,23 @@ def get_engine():
 
 def load_data():
     engine = get_engine()
-    
+
     product_requests = pd.read_sql("SELECT ProductID, RequestID, Quantity FROM Product_Requests WHERE IsDeleted = 0", engine)
     products = pd.read_sql("SELECT ProductID, Name FROM Products WHERE IsDeleted = 0", engine)
     users = pd.read_sql("SELECT UserID, Department FROM Users WHERE IsDeleted = 0", engine)
-    requests = pd.read_sql("SELECT RequestID, UserID FROM Requests WHERE IsDeleted = 0", engine)
+    
+    # 👉 Only include approved requests
+    requests = pd.read_sql("""
+        SELECT RequestID, UserID 
+        FROM Requests 
+        WHERE IsDeleted = 0 AND IsApprovedBySupLead = 1
+    """, engine)
 
     merged = product_requests.merge(requests, on="RequestID")
     merged = merged.merge(users, on="UserID")
+    
     return merged, products
+
 
 def train_models(data):
     # Prepare encoders
