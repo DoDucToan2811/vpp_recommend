@@ -6,6 +6,7 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 import numpy as np
 from sklearn.ensemble import IsolationForest
+from scipy.stats import zscore
 
 app = Flask(__name__)
 CORS(app)
@@ -64,26 +65,31 @@ def train_models(data):
     reg.fit(X_reg, y_reg)
 
     return clf, reg, le_dep, le_prod
+
 # ✅ Global storage for models & detection results
 detection_models = {
     "price_model": None,
     "quantity_model": None,
     "price_abnormal_ids": set(),
-    "quantity_abnormal_ids": set()
+    "quantity_abnormal_ids": set(),
+    "price_anomaly_details": {},
+    "quantity_anomaly_details": {}
 }
 
 def train_abnormality_models():
     engine = get_engine()
-
+    
+    # Add date filtering for 1 month
     requests_df = pd.read_sql("""
-        SELECT r.RequestID, r.TotalPrice, r.UserID, u.Department
+        SELECT r.RequestID, r.TotalPrice, r.UserID, u.Department, r.CreatedDate
         FROM Requests r
         JOIN Users u ON r.UserID = u.UserID
         WHERE r.IsDeleted = 0 AND r.IsApprovedByDepLead = 1 AND r.IsProcessedByDepLead = 1
+        AND r.CreatedDate >= DATEADD(MONTH, -1, GETDATE())
     """, engine)
 
     product_requests_df = pd.read_sql("""
-        SELECT RequestID, ProductID, Quantity
+        SELECT RequestID, ProductID, Quantity 
         FROM Product_Requests
         WHERE IsDeleted = 0
     """, engine)
@@ -97,7 +103,26 @@ def train_abnormality_models():
     # ---- Train price anomaly model
     price_model = IsolationForest(contamination=0.1, random_state=42)
     requests_df['PriceAnomaly'] = price_model.fit_predict(requests_df[['TotalPrice']])
-    abnormal_price_ids = set(requests_df[requests_df['PriceAnomaly'] == -1]['RequestID'])
+    
+    # Calculate z-scores for prices to determine high/low
+    requests_df['PriceZScore'] = zscore(requests_df['TotalPrice'])
+    
+    # Store detailed anomaly information in Vietnamese
+    price_anomalies = {}
+    for _, row in requests_df[requests_df['PriceAnomaly'] == -1].iterrows():
+        direction_vi = "cao" if row['PriceZScore'] > 0 else "thấp"
+        direction_comparison_vi = "cao hơn" if row['PriceZScore'] > 0 else "thấp hơn"
+        avg_price = requests_df['TotalPrice'].mean()
+        pct_diff = abs((row['TotalPrice'] - avg_price) / avg_price * 100)
+        
+        # Format with VND symbol (placed after the number, no decimals)
+        price_anomalies[row['RequestID']] = {
+            "direction": direction_vi,
+            "value": row['TotalPrice'],
+            "avg_value": avg_price,
+            "percent_diff": round(pct_diff, 2),
+            "description": f"Giá bất thường {direction_vi} ({int(row['TotalPrice']):,}₫) so với trung bình tháng ({int(avg_price):,}₫), {pct_diff:.1f}% {direction_comparison_vi} trung bình"
+        }
 
     # ---- Train quantity anomaly model
     merged = requests_df.merge(product_requests_df, on='RequestID')
@@ -105,13 +130,35 @@ def train_abnormality_models():
 
     quantity_model = IsolationForest(contamination=0.1, random_state=42)
     merged['QuantityAnomaly'] = quantity_model.fit_predict(merged[['Quantity']])
-    abnormal_quantity_ids = set(merged[merged['QuantityAnomaly'] == -1]['RequestID'])
+    
+    # Calculate z-scores for quantities
+    merged['QuantityZScore'] = merged.groupby('ProductID')['Quantity'].transform(lambda x: zscore(x) if len(x) > 1 else 0)
+    
+    # Store detailed quantity anomaly information in Vietnamese
+    quantity_anomalies = {}
+    for _, row in merged[merged['QuantityAnomaly'] == -1].iterrows():
+        product_avg = merged[merged['ProductID'] == row['ProductID']]['Quantity'].mean()
+        direction_vi = "cao" if row['QuantityZScore'] > 0 else "thấp"
+        direction_comparison_vi = "cao hơn" if row['QuantityZScore'] > 0 else "thấp hơn"
+        pct_diff = abs((row['Quantity'] - product_avg) / product_avg * 100) if product_avg > 0 else 0
+        
+        quantity_anomalies[row['RequestID']] = {
+            "direction": direction_vi,
+            "product": row['Name'],
+            "value": row['Quantity'],
+            "avg_value": product_avg,
+            "percent_diff": round(pct_diff, 2),
+            "description": f"Số lượng cho {row['Name']} bất thường {direction_vi} ({row['Quantity']}) so với trung bình tháng ({product_avg:.1f}), {pct_diff:.1f}% {direction_comparison_vi} trung bình"
+        }
 
-    # ✅ Save to global variable
+    # Save to global variable
     detection_models['price_model'] = price_model
     detection_models['quantity_model'] = quantity_model
-    detection_models['price_abnormal_ids'] = abnormal_price_ids
-    detection_models['quantity_abnormal_ids'] = abnormal_quantity_ids
+    detection_models['price_abnormal_ids'] = set(price_anomalies.keys())
+    detection_models['quantity_abnormal_ids'] = set(quantity_anomalies.keys())
+    detection_models['price_anomaly_details'] = price_anomalies
+    detection_models['quantity_anomaly_details'] = quantity_anomalies
+
 @app.route('/retrain_anomaly_models', methods=['POST'])
 def retrain_anomaly_models():
     train_abnormality_models()
@@ -152,9 +199,6 @@ def recommend_ml():
         })
 
     return jsonify(results)
-
-
-from scipy.stats import zscore
 
 @app.route('/detect_abnormal_requests', methods=['GET'])
 def detect_abnormal_requests():
@@ -204,6 +248,7 @@ def detect_abnormal_requests():
     }
 
     return jsonify(abnormal_combined)
+
 @app.route('/check_request_abnormality', methods=['GET'])
 def check_request_abnormality():
     request_id = request.args.get('request_id')
@@ -218,16 +263,21 @@ def check_request_abnormality():
     result = {
         "RequestID": request_id,
         "IsAbnormal": False,
-        "AbnormalTypes": []
+        "AbnormalTypes": [],
+        "Descriptions": []
     }
 
     if request_id in detection_models['price_abnormal_ids']:
         result["IsAbnormal"] = True
         result["AbnormalTypes"].append("TotalPrice")
+        if request_id in detection_models['price_anomaly_details']:
+            result["Descriptions"].append(detection_models['price_anomaly_details'][request_id]["description"])
 
     if request_id in detection_models['quantity_abnormal_ids']:
         result["IsAbnormal"] = True
         result["AbnormalTypes"].append("Quantity")
+        if request_id in detection_models['quantity_anomaly_details']:
+            result["Descriptions"].append(detection_models['quantity_anomaly_details'][request_id]["description"])
 
     return jsonify(result)
 
