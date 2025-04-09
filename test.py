@@ -101,7 +101,7 @@ def train_abnormality_models():
     """, engine)
 
     # ---- Train price anomaly model
-    price_model = IsolationForest(contamination=0.1, random_state=42)
+    price_model = IsolationForest(contamination=0.05, random_state=42)
     requests_df['PriceAnomaly'] = price_model.fit_predict(requests_df[['TotalPrice']])
     
     # Calculate z-scores for prices to determine high/low
@@ -128,7 +128,7 @@ def train_abnormality_models():
     merged = requests_df.merge(product_requests_df, on='RequestID')
     merged = merged.merge(products_df, on='ProductID')
 
-    quantity_model = IsolationForest(contamination=0.1, random_state=42)
+    quantity_model = IsolationForest(contamination=0.05, random_state=42)
     merged['QuantityAnomaly'] = quantity_model.fit_predict(merged[['Quantity']])
     
     # Calculate z-scores for quantities
@@ -226,7 +226,7 @@ def detect_abnormal_requests():
 
     # --- Abnormal TotalPrice Detection (AI)
     price_data = requests_df[['TotalPrice']]
-    price_model = IsolationForest(contamination=0.1, random_state=42)
+    price_model = IsolationForest(contamination=0.05, random_state=42)
     requests_df['PriceAnomaly'] = price_model.fit_predict(price_data)
 
     abnormal_price = requests_df[requests_df['PriceAnomaly'] == -1]
@@ -236,7 +236,7 @@ def detect_abnormal_requests():
     merged = merged.merge(products_df, on='ProductID')
 
     quantity_data = merged[['Quantity']]
-    quantity_model = IsolationForest(contamination=0.1, random_state=42)
+    quantity_model = IsolationForest(contamination=0.05, random_state=42)
     merged['QuantityAnomaly'] = quantity_model.fit_predict(quantity_data)
 
     abnormal_quantity = merged[merged['QuantityAnomaly'] == -1]
