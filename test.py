@@ -121,7 +121,7 @@ def train_abnormality_models():
             "value": row['TotalPrice'],
             "avg_value": avg_price,
             "percent_diff": round(pct_diff, 2),
-            "description": f"Giá bất thường {direction_vi} ({int(row['TotalPrice']):,}₫) so với trung bình tháng ({int(avg_price):,}₫), {pct_diff:.1f}% {direction_comparison_vi} trung bình"
+            "description": f"Giá bất thường {direction_vi} ({int(row['TotalPrice']):,}₫) so với 1 tháng gần đây ({int(avg_price):,}₫), {pct_diff:.1f}% {direction_comparison_vi} trung bình"
         }
 
     # ---- Train quantity anomaly model
@@ -148,7 +148,7 @@ def train_abnormality_models():
             "value": row['Quantity'],
             "avg_value": product_avg,
             "percent_diff": round(pct_diff, 2),
-            "description": f"Số lượng cho {row['Name']} bất thường {direction_vi} ({row['Quantity']}) so với trung bình tháng ({product_avg:.1f}), {pct_diff:.1f}% {direction_comparison_vi} trung bình"
+            "description": f"Số lượng cho {row['Name']} bất thường {direction_vi} ({row['Quantity']}) so với 1 tháng gần đây ({product_avg:.1f}), {pct_diff:.1f}% {direction_comparison_vi} trung bình"
         }
 
     # Save to global variable
