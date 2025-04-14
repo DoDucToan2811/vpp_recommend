@@ -3,9 +3,9 @@ from flask_cors import CORS
 import pandas as pd
 from sqlalchemy import create_engine
 from sklearn.preprocessing import LabelEncoder
-from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor #recommend model, supervised
 import numpy as np
-from sklearn.ensemble import IsolationForest
+from sklearn.ensemble import IsolationForest #abnormaly detection, unsupervised
 from scipy.stats import zscore
 
 app = Flask(__name__)
