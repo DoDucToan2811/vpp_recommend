@@ -281,6 +281,106 @@ def check_request_abnormality():
 
     return jsonify(result)
 
+@app.route('/check_any_request_abnormality', methods=['GET'])
+def check_any_request_abnormality():
+    request_id = request.args.get('request_id')
+    if not request_id:
+        return jsonify({"error": "Missing 'request_id' parameter"}), 400
+
+    try:
+        request_id = int(request_id)
+    except:
+        return jsonify({"error": "Invalid request_id"}), 400
+        
+    engine = get_engine()
+    
+    # Get the specific request details regardless of approval state
+    current_request = pd.read_sql(f"""
+        SELECT r.RequestID, r.TotalPrice, r.UserID, u.Department
+        FROM Requests r
+        JOIN Users u ON r.UserID = u.UserID
+        WHERE r.RequestID = {request_id} AND r.IsDeleted = 0
+    """, engine)
+    
+    if current_request.empty:
+        return jsonify({"error": "Request not found or deleted"}), 404
+    
+    # Get the product details for this request
+    current_products = pd.read_sql(f"""
+        SELECT pr.RequestID, pr.ProductID, pr.Quantity, p.Name
+        FROM Product_Requests pr
+        JOIN Products p ON pr.ProductID = p.ProductID
+        WHERE pr.RequestID = {request_id} AND pr.IsDeleted = 0
+    """, engine)
+    
+    result = {
+        "RequestID": request_id,
+        "IsAbnormal": False,
+        "AbnormalTypes": [],
+        "Descriptions": []
+    }
+    
+    # Ensure models are trained
+    if detection_models["price_model"] is None:
+        train_abnormality_models()
+    
+    # Check price abnormality
+    if not current_request.empty:
+        price_prediction = detection_models["price_model"].predict(current_request[["TotalPrice"]])
+        
+        if price_prediction[0] == -1:
+            # Get reference data of approved requests from last month
+            reference_requests = pd.read_sql("""
+                SELECT AVG(TotalPrice) as AvgPrice
+                FROM Requests 
+                WHERE IsDeleted = 0 AND IsApprovedByDepLead = 1 AND IsProcessedByDepLead = 1
+                AND CreatedDate >= DATEADD(MONTH, -1, GETDATE())
+            """, engine)
+            
+            avg_price = reference_requests["AvgPrice"].values[0]
+            current_price = current_request["TotalPrice"].values[0]
+            pct_diff = abs((current_price - avg_price) / avg_price * 100) if avg_price > 0 else 0
+            direction_vi = "cao" if current_price > avg_price else "thấp"
+            direction_comparison_vi = "cao hơn" if current_price > avg_price else "thấp hơn"
+            
+            result["IsAbnormal"] = True
+            result["AbnormalTypes"].append("TotalPrice")
+            result["Descriptions"].append(
+                f"Giá bất thường {direction_vi} ({int(current_price):,}₫) so với 1 tháng gần đây ({int(avg_price):,}₫), "
+                f"{pct_diff:.1f}% {direction_comparison_vi} trung bình"
+            )
+    
+    # Check quantity abnormality
+    if not current_products.empty:
+        for _, product_row in current_products.iterrows():
+            qty_prediction = detection_models["quantity_model"].predict([[product_row["Quantity"]]])
+            
+            if qty_prediction[0] == -1:
+                # Get reference data for this product from approved requests
+                reference_qty = pd.read_sql(f"""
+                    SELECT AVG(pr.Quantity) as AvgQty
+                    FROM Product_Requests pr
+                    JOIN Requests r ON pr.RequestID = r.RequestID
+                    WHERE pr.ProductID = {product_row['ProductID']} AND pr.IsDeleted = 0
+                    AND r.IsDeleted = 0 AND r.IsApprovedByDepLead = 1 AND r.IsProcessedByDepLead = 1
+                    AND r.CreatedDate >= DATEADD(MONTH, -1, GETDATE())
+                """, engine)
+                
+                product_avg = reference_qty["AvgQty"].values[0] if not reference_qty.empty else 0
+                current_qty = product_row["Quantity"]
+                pct_diff = abs((current_qty - product_avg) / product_avg * 100) if product_avg > 0 else 0
+                direction_vi = "cao" if current_qty > product_avg else "thấp"
+                direction_comparison_vi = "cao hơn" if current_qty > product_avg else "thấp hơn"
+                
+                result["IsAbnormal"] = True
+                result["AbnormalTypes"].append("Quantity")
+                result["Descriptions"].append(
+                    f"Số lượng cho {product_row['Name']} bất thường {direction_vi} ({current_qty}) so với 1 tháng gần đây "
+                    f"({product_avg:.1f}), {pct_diff:.1f}% {direction_comparison_vi} trung bình"
+                )
+    
+    return jsonify(result)
+
 
 if __name__ == '__main__':
     train_abnormality_models()
